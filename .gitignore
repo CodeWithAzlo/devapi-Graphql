@@ -1,0 +1,51 @@
+# Secrets and machine-local config.
+# Commit the *.env.example files. Never commit a real .env.
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Installed dependencies. A clone runs npm install.
+node_modules/
+
+# Build, test, and cache output
+dist/
+build/
+coverage/
+.vite/
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local caches
+.npm-cache/
+.tmp/
+.cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Local databases (Postgres is configured in .env, not a file in this repo)
+backend/prisma/*.db
+backend/prisma/*.db-journal
+*.sqlite
+*.sqlite3
+
+# Personal seed (your own emails). The public demo is prisma/seed_test.js.
+backend/prisma/seed.js
+
+# Kept on purpose so someone can clone, seed, and log in:
+#   backend/prisma/seed_test.js
+#   backend/prisma/migrations/
+#   backend/.env.example
+#   frontend/.env.example
+#   package-lock.json files

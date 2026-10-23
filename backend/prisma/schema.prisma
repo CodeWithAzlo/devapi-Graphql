@@ -1,0 +1,280 @@
+// ============================================================
+// prisma/schema.prisma
+//
+// This file is the DATABASE BLUEPRINT.
+// Prisma reads it and:
+//   1. creates/updates PostgreSQL tables (migrate)
+//   2. generates a typed JS client we import in src/db/index.js
+//
+// How to read a model:
+//   model User { ... }  →  a table
+//   email String @unique  →  a column, must be unique
+//   workspaces Workspace[]  →  this User can own many Workspaces
+//   owner User @relation(...)  →  this row belongs to one User
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Enums (fixed lists of allowed values) ----------
+
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum HttpMethod {
+  GET
+  POST
+  PUT
+  PATCH
+  DELETE
+  HEAD
+  OPTIONS
+}
+
+enum VersionStatus {
+  DRAFT
+  PUBLISHED
+}
+
+// Where a parameter sits on an HTTP request
+enum ParameterLocation {
+  PATH
+  QUERY
+  HEADER
+  COOKIE
+}
+
+enum SchemaKind {
+  REQUEST
+  RESPONSE
+}
+
+enum ChangeSeverity {
+  NON_BREAKING
+  POTENTIALLY_BREAKING
+  BREAKING
+}
+
+enum ChangeType {
+  ENDPOINT_ADDED
+  ENDPOINT_REMOVED
+  METHOD_CHANGED
+  PARAMETER_ADDED
+  PARAMETER_REMOVED
+  REQUIRED_CHANGED
+  FIELD_ADDED
+  FIELD_REMOVED
+  TYPE_CHANGED
+}
+
+// ---------- User ----------
+// A person who logs in. Owns workspaces and can be invited to others.
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  name         String
+  // Real password hashing comes in Phase 3. Seed data stores a placeholder.
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  ownedWorkspaces Workspace[]       @relation("WorkspaceOwner")
+  memberships     WorkspaceMember[]
+
+  @@map("users")
+}
+
+// ---------- Workspace ----------
+// A team space. Contains APIs. One owner + many members.
+
+model Workspace {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  description String?
+  ownerId     String
+  owner       User     @relation("WorkspaceOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members WorkspaceMember[]
+  apis    Api[]
+
+  @@map("workspaces")
+}
+
+// ---------- WorkspaceMember ----------
+// Join table: which user is in which workspace, and with what role.
+
+model WorkspaceMember {
+  id          String    @id @default(uuid())
+  workspaceId String
+  userId      String
+  role        Role
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+
+  @@unique([workspaceId, userId])
+  @@map("workspace_members")
+}
+
+// ---------- Api ----------
+// One documented HTTP API inside a workspace (e.g. "Orders API").
+// The actual endpoints live on ApiVersion, not here — each version
+// has its own copy of the definition.
+
+model Api {
+  id          String    @id @default(uuid())
+  workspaceId String
+  name        String
+  description String?
+  baseUrl     String?
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  versions ApiVersion[]
+
+  @@map("apis")
+}
+
+// ---------- ApiVersion ----------
+// v1, v2, v3, …  Each version owns endpoints, params, schemas, examples.
+
+model ApiVersion {
+  id          String        @id @default(uuid())
+  apiId       String
+  version     String
+  status      VersionStatus @default(DRAFT)
+  isCurrent   Boolean       @default(false)
+  notes       String?
+  // Raw OpenAPI JSON (used later when we import a spec)
+  source      Json?
+  api         Api           @relation(fields: [apiId], references: [id], onDelete: Cascade)
+  createdAt   DateTime      @default(now())
+  publishedAt DateTime?
+
+  endpoints     ApiEndpoint[]
+  changelog     ApiChangelog[]
+  changesFrom   ApiChange[]    @relation("ChangeFromVersion")
+  changesTo     ApiChange[]    @relation("ChangeToVersion")
+
+  @@unique([apiId, version])
+  @@map("api_versions")
+}
+
+// ---------- ApiEndpoint ----------
+// One path + method, e.g. GET /users/:id  (belongs to a version)
+
+model ApiEndpoint {
+  id          String     @id @default(uuid())
+  versionId   String
+  method      HttpMethod
+  path        String
+  summary     String?
+  description String?
+  deprecated  Boolean    @default(false)
+  version     ApiVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  parameters ApiParameter[]
+  schemas    ApiSchema[]
+  examples   ApiExample[]
+
+  @@unique([versionId, method, path])
+  @@map("api_endpoints")
+}
+
+// ---------- ApiParameter ----------
+// Path / query / header / cookie params on an endpoint.
+
+model ApiParameter {
+  id          String             @id @default(uuid())
+  endpointId  String
+  name        String
+  location    ParameterLocation
+  type        String
+  required    Boolean            @default(false)
+  description String?
+  example     String?
+  endpoint    ApiEndpoint        @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@map("api_parameters")
+}
+
+// ---------- ApiSchema ----------
+// Request body or response body JSON Schema (stored as JSON).
+
+model ApiSchema {
+  id          String      @id @default(uuid())
+  endpointId  String
+  kind        SchemaKind
+  name        String
+  contentType String      @default("application/json")
+  statusCode  Int?
+  schema      Json
+  endpoint    ApiEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@map("api_schemas")
+}
+
+// ---------- ApiExample ----------
+// Sample request / response payloads for docs and the explorer.
+
+model ApiExample {
+  id         String      @id @default(uuid())
+  endpointId String
+  name       String
+  request    Json?
+  response   Json?
+  statusCode Int?
+  endpoint   ApiEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@map("api_examples")
+}
+
+// ---------- ApiChange ----------
+// One row per detected difference when comparing two versions.
+// Produced in Phase 9; seed data already has a few so we can query them.
+
+model ApiChange {
+  id            String         @id @default(uuid())
+  fromVersionId String
+  toVersionId   String
+  changeType    ChangeType
+  severity      ChangeSeverity
+  summary       String
+  details       Json?
+  fromVersion   ApiVersion     @relation("ChangeFromVersion", fields: [fromVersionId], references: [id], onDelete: Cascade)
+  toVersion     ApiVersion     @relation("ChangeToVersion", fields: [toVersionId], references: [id], onDelete: Cascade)
+  createdAt     DateTime       @default(now())
+
+  @@map("api_changes")
+}
+
+// ---------- ApiChangelog ----------
+// Human-readable notes for a version (auto-built from ApiChange later).
+
+model ApiChangelog {
+  id        String     @id @default(uuid())
+  versionId String
+  title     String
+  body      String
+  version   ApiVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  createdAt DateTime   @default(now())
+
+  @@map("api_changelogs")
+}
